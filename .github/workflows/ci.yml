@@ -1,0 +1,81 @@
+name: build
+
+# CI here proves the module *compiles cleanly* against a range of kernels and
+# passes the kernel's own style checker.  It cannot test the driver: that needs
+# the physical stick and an aerial.  Nothing in this workflow should be read as
+# evidence that a given kernel works in practice.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build against distro kernel headers
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+          - image: ubuntu:22.04
+          - image: debian:12
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential linux-headers-generic || \
+          apt-get install -y --no-install-recommends \
+            build-essential linux-headers-amd64
+
+      - name: build
+        run: |
+          KVER=$(ls /lib/modules | head -1)
+          echo "building against $KVER"
+          make -C src KDIR=/lib/modules/$KVER/build
+
+      - name: fail on compiler warnings
+        run: |
+          KVER=$(ls /lib/modules | head -1)
+          make -C src clean
+          make -C src KDIR=/lib/modules/$KVER/build 2>&1 | tee build.log
+          # kbuild emits environment notices ("the compiler differs from the
+          # one used to build the kernel", "pahole version differs") that are
+          # not code warnings.  Only fail on diagnostics against our source.
+          if grep -E '^[^ ]*unohd_dvb\.c.*(warning|error):' build.log; then
+            echo "::error::compiler diagnostics against unohd_dvb.c"
+            exit 1
+          fi
+
+  checkpatch:
+    name: checkpatch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fetch checkpatch
+        run: |
+          mkdir -p tools
+          base=https://raw.githubusercontent.com/torvalds/linux/master
+          curl -sSfL -o tools/checkpatch.pl $base/scripts/checkpatch.pl
+          curl -sSfL -o tools/spelling.txt  $base/scripts/spelling.txt
+          curl -sSfL -o tools/const_structs.checkpatch \
+            $base/scripts/const_structs.checkpatch
+          chmod +x tools/checkpatch.pl
+
+      - name: run checkpatch
+        run: |
+          perl tools/checkpatch.pl --no-tree --strict --file \
+            --ignore FILE_PATH_CHANGES,LINUX_VERSION_CODE \
+            src/unohd_dvb.c | tee checkpatch.log
+          if grep -q '^ERROR' checkpatch.log; then
+            echo "::error::checkpatch reported errors"
+            exit 1
+          fi

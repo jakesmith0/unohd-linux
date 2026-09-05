@@ -1,0 +1,14 @@
+# Stable per-stick names for the WinTV-UnoHD, because DVB adapter numbers are
+# assigned in probe order and are NOT stable across reboots, module reloads or
+# the order in which two sticks happen to enumerate.
+#
+# Install and activate with:
+#   sudo cp 99-unohd-dvb.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=dvb
+#
+# Gives you, for each stick:
+#   /dev/dvb/by-serial/unohd-<serial>/{frontend0,demux0,dvr0,net0}
+#
+# %k is the kernel name, "dvb<adapter>.<node>" (e.g. dvb3.frontend0).  The
+# PROGRAM strips the "dvb<N>." prefix so %c is the bare node name.
+SUBSYSTEM=="dvb", ACTION=="add", ATTRS{idVendor}=="29df", ATTRS{idProduct}=="0280", PROGRAM="/bin/sh -c 'echo %k | sed -e \"s/^dvb[0-9]*\\.//\"'", SYMLINK+="dvb/by-serial/unohd-$attr{serial}/%c"

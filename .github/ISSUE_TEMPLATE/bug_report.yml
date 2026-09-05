@@ -1,0 +1,72 @@
+name: Bug report / hardware report
+description: Something does not work, or you tried it on hardware or a transmitter this has never seen
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports from muxes and transmitters this driver has never seen are
+        genuinely useful, even when everything works. Please say so either way.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of report is this?
+      options:
+        - Something is broken
+        - It works — reporting a new transmitter/mux/country
+        - Multi-PLP DVB-T2 result (especially wanted)
+    validations:
+      required: true
+
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel and distribution
+      description: Output of `uname -a`, plus your distro and version.
+      placeholder: "Linux box 6.8.0-45-generic ... / Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: usb
+    attributes:
+      label: USB identity
+      description: "`lsusb -d 29df:0280` — and if you can, the descriptor dump from `lsusb -d 29df:0280 -v`."
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: dmesg
+    attributes:
+      label: Kernel log
+      description: |
+        `dmesg | grep -i unohd`. If you are reporting a failure, please reload
+        with tracing on first — `sudo rmmod unohd_dvb; sudo insmod unohd_dvb.ko debug=1` —
+        and include that instead. It is verbose but it is what makes a report actionable.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: dvb
+    attributes:
+      label: What you tried, and what the DVB tools said
+      description: "The `dvbv5-scan` / `dvbv5-zap` command line and its output, or the TVHeadend log lines."
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: rf
+    attributes:
+      label: Transmitter and mux
+      description: Which transmitter, frequency, and DVB-T or DVB-T2 (with PLP if you know it).
+      placeholder: "586 MHz, DVB-T2, PLP 0"
+
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else
+      description: Other tuners on the same machine, USB hub, powered or not, more than one stick, and so on.
