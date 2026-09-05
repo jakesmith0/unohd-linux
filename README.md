@@ -9,10 +9,13 @@ There was no Linux driver for this stick before. The vendor ships Windows-only
 software that drives it from userspace rather than through a normal tuner
 driver, which is part of why it never got Linux support.
 
-> **Status: v0.1.0, experimental.** It has been developed and tested against
-> two sticks on one machine, on UK Freeview. It works well there, but the
-> sample is small. Please report what happens on yours — see
+> **Status: v0.1.0, experimental.** Developed and tested against two sticks on
+> one machine, on UK Freeview, on Linux 7.0. It works well there, but that is
+> the whole of the sample. Please report what happens on yours — see
 > [Reporting problems](#reporting-problems).
+
+**Kernel:** 6.12 or newer. The driver includes `<linux/unaligned.h>`, which
+was `<asm/unaligned.h>` before 6.12; on an older kernel change that one line.
 
 ## Supported hardware
 
@@ -70,7 +73,7 @@ Bus 001 Device 007: ID 29df:0280 SMIT CI Device
 
 ## Building and installing
 
-You need kernel headers and a compiler.
+You need kernel headers and a compiler, on a 6.12-or-newer kernel.
 
 ```console
 # Debian/Ubuntu
@@ -82,7 +85,7 @@ $ sudo dnf install kernel-devel gcc make
 ### Straight build
 
 ```console
-$ git clone https://github.com/<owner>/unohd-linux
+$ git clone https://github.com/jakesmith0/unohd-linux
 $ cd unohd-linux/src
 $ make
 $ sudo insmod unohd_dvb.ko
