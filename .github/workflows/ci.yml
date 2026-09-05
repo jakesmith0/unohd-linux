@@ -35,24 +35,31 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential linux-headers-amd64
 
-      - name: build
+      - name: build and reject compiler diagnostics
         run: |
-          KVER=$(ls /lib/modules | head -1)
+          set -eu
+          # The runner's own kernel appears under /lib/modules inside the
+          # container without a build/ symlink, and sorts ahead of the headers
+          # we just installed.  Pick a version that actually has one.
+          KVER=""
+          for k in $(ls -1 /lib/modules); do
+            if [ -e "/lib/modules/$k/build" ]; then KVER=$k; fi
+          done
+          if [ -z "$KVER" ]; then
+            echo "::error::no kernel headers with a build/ symlink under /lib/modules"
+            ls -la /lib/modules
+            exit 1
+          fi
           echo "building against $KVER"
-          make -C src KDIR=/lib/modules/$KVER/build
-
-      - name: fail on compiler warnings
-        run: |
-          KVER=$(ls /lib/modules | head -1)
-          make -C src clean
-          make -C src KDIR=/lib/modules/$KVER/build 2>&1 | tee build.log
+          make -C src KDIR="/lib/modules/$KVER/build" 2>&1 | tee build.log
           # kbuild emits environment notices ("the compiler differs from the
           # one used to build the kernel", "pahole version differs") that are
           # not code warnings.  Only fail on diagnostics against our source.
-          if grep -E '^[^ ]*unohd_dvb\.c.*(warning|error):' build.log; then
+          if grep -E 'unohd_dvb\.c.*(warning|error):' build.log; then
             echo "::error::compiler diagnostics against unohd_dvb.c"
             exit 1
           fi
+          test -f src/unohd_dvb.ko
 
   checkpatch:
     name: checkpatch
