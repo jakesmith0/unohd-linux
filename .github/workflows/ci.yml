@@ -72,8 +72,11 @@ jobs:
 
       - name: run checkpatch
         run: |
+          # LINUX_VERSION_CODE and CONSTANT_COMPARISON both fire on the
+          # out-of-tree version guard around <linux/unaligned.h>.  In-tree
+          # code would not carry that guard at all, so neither applies here.
           perl tools/checkpatch.pl --no-tree --strict --file \
-            --ignore FILE_PATH_CHANGES,LINUX_VERSION_CODE \
+            --ignore FILE_PATH_CHANGES,LINUX_VERSION_CODE,CONSTANT_COMPARISON \
             src/unohd_dvb.c | tee checkpatch.log
           if grep -q '^ERROR' checkpatch.log; then
             echo "::error::checkpatch reported errors"

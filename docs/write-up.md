@@ -398,6 +398,15 @@ that fails for every real user on their first evening, because a PVR back end
 leaves adapters idle almost all of the time. It was found by accident, during
 a test aimed at something else entirely.
 
+The fix was then tested against the failure itself rather than against the
+theory. Both sticks were left idle for **720 seconds** — three times the
+measured death point — with nothing but the once-a-minute status read going
+out. Four keepalives were sent and four were answered. Then both were swept
+across all seven local multiplexes: **fourteen tunes, fourteen locks**, every
+one acquired in about a second, every capture free of sync errors, TEI-flagged
+packets and continuity discontinuities, and no kernel diagnostics at all. The
+identical sweep before the fix had produced seven failures out of seven.
+
 ## 16. Two sticks at once
 
 **Measured**, with two units on one host, sharing an aerial through a splitter:
@@ -416,6 +425,17 @@ a test aimed at something else entirely.
   thread or state corruption.
 - Across the whole test session: **zero** BUG, Oops, WARNING, refcount or
   use-after-free reports in the kernel log.
+
+The pair also gave the first honest reception comparison. Both sticks and three
+unrelated DVB-T2 tuners hang off the same aerial and splitter, so the same
+seven multiplexes could be put through all five. Both sticks locked all seven,
+including the weakest — a marginal QPSK 3/4 mux that one of the other tuners
+could not lock at all and that the other two reported as 0 % signal while
+locking anyway. The two sticks disagreed sharply with each other on reported
+strength, though: 58–94 % on one and 10–62 % on the other, on identical muxes
+seconds apart, while both returned the same byte counts with the same near-zero
+error rates. Whatever the strength figure is scaled against, it is not
+comparable between units — the C/N figure and the error counts were.
 
 One measurement was initially misread, and the correction is instructive. An
 early dual-device capture showed 14 continuity discontinuities and what looked

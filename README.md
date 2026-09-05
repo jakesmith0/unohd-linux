@@ -14,8 +14,8 @@ driver, which is part of why it never got Linux support.
 > the whole of the sample. Please report what happens on yours — see
 > [Reporting problems](#reporting-problems).
 
-**Kernel:** 6.12 or newer. The driver includes `<linux/unaligned.h>`, which
-was `<asm/unaligned.h>` before 6.12; on an older kernel change that one line.
+**Kernel:** builds cleanly against 5.15, 6.1, 6.8 and 7.0 headers. Only 7.0 has
+been run against real hardware; the others are compile-only evidence.
 
 ## Supported hardware
 
@@ -68,12 +68,17 @@ Bus 001 Device 007: ID 29df:0280 SMIT CI Device
   same read a tuned adapter already makes. If you ever see a stick stop
   locking after a long idle, `unbind`/`bind` that one device revives it and a
   bug report would be very welcome.
+- **Signal strength is not comparable between sticks.** Two units on the same
+  aerial and splitter, tuned to the same muxes seconds apart, reported 58-94 %
+  and 10-62 % while delivering identical byte counts with the same near-zero
+  error rates. Trust the C/N figure and the error counters; treat the strength
+  percentage as a per-unit indication only.
 - Suspend/resume across a host sleep is untested.
 - Not yet submitted to `linux-media`; this is an out-of-tree module.
 
 ## Building and installing
 
-You need kernel headers and a compiler, on a 6.12-or-newer kernel.
+You need kernel headers and a compiler.
 
 ```console
 # Debian/Ubuntu

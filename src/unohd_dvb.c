@@ -44,7 +44,12 @@
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/time.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 #include <linux/unaligned.h>
+#else
+#include <asm/unaligned.h>	/* moved to linux/ in 6.12 */
+#endif
 
 #include <media/dvb_frontend.h>
 #include <media/dvb_demux.h>

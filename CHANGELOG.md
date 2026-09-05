@@ -36,3 +36,5 @@ First public release. The stick works as an ordinary Linux DVB adapter.
   Use the supplied udev rule for stable names.
 - Suspend/resume across host sleep is untested.
 - Out-of-tree only; not yet submitted to `linux-media`.
+- Compiles against 5.15, 6.1, 6.8 and 7.0 kernel headers, but has only been
+  run against hardware on 7.0.
