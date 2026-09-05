@@ -76,9 +76,23 @@ Bus 001 Device 007: ID 29df:0280 SMIT CI Device
 - Suspend/resume across a host sleep is untested.
 - Not yet submitted to `linux-media`; this is an out-of-tree module.
 
-## Building and installing
+## Installing
 
-You need kernel headers and a compiler.
+On Debian or Ubuntu, one command:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/jakesmith0/unohd-linux/main/install.sh | sudo sh
+```
+
+It fetches the latest tagged release and installs it through DKMS, so kernel
+updates rebuild it. [`install.sh`](install.sh) is a plain shell script — read it
+first if you would rather, or append `-s -- --dry-run` to see exactly what it
+would do without changing anything. Other options: `--version=vX.Y.Z`,
+`--force`, `--uninstall`, `--help`.
+
+## Building it yourself
+
+Any distribution. You need kernel headers and a compiler:
 
 ```console
 # Debian/Ubuntu
@@ -104,6 +118,9 @@ $ sudo cp -r src dkms.conf /usr/src/unohd-dvb-0.1.0/
 $ sudo dkms add    -m unohd-dvb -v 0.1.0
 $ sudo dkms build  -m unohd-dvb -v 0.1.0
 $ sudo dkms install -m unohd-dvb -v 0.1.0
+$ sudo cp udev/99-unohd-dvb.rules /etc/udev/rules.d/   # optional, see below
+$ sudo udevadm control --reload
+$ sudo modprobe unohd_dvb
 ```
 
 Plug the stick in, then check:
@@ -119,6 +136,9 @@ usb 1-5: registered DVB adapter 3
 ### Removing it
 
 ```console
+# installed with install.sh
+$ curl -fsSL https://raw.githubusercontent.com/jakesmith0/unohd-linux/main/install.sh | sudo sh -s -- --uninstall
+# installed by hand
 $ sudo rmmod unohd_dvb
 $ sudo dkms remove -m unohd-dvb -v 0.1.0 --all     # if installed via DKMS
 ```
