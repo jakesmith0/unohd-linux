@@ -421,11 +421,14 @@ identical sweep before the fix had produced seven failures out of seven.
   ping-pong: **exactly one reset and one registration per device per cold
   enumeration**, across load/unload cycles, both bind orders, and
   deauthorize/reauthorize cycles.
-- Both tune and stream **simultaneously on different muxes**. A 150-second
-  concurrent capture produced 754,142,448 bytes (DVB-T2, 586 MHz) and
-  509,064,144 bytes (DVB-T, 554 MHz) — 6.7 million packets in total with
-  **zero sync errors, zero TEI-flagged packets and zero continuity
-  discontinuities** on both.
+- Both tune and stream **simultaneously on different muxes**. A ten-minute
+  concurrent capture produced 3,016,177,248 bytes (DVB-T2, 586 MHz) and
+  2,035,929,456 bytes (DVB-T, 538 MHz) — 26.9 million packets in total, with
+  **zero sync errors and zero TEI-flagged packets** on both. Eleven continuity
+  discontinuities appeared in the 10.8 million packets of the DVB-T capture and
+  none in the 16.0 million of the DVB-T2 one; that is roughly one per million
+  packets on one leg of a domestic splitter, and it is reported here rather
+  than rounded away.
 - Unbinding, rebinding and deferred teardown of one stick while the other
   streams leaves the survivor untouched: no lock loss, no renumbering, no
   thread or state corruption.
@@ -481,11 +484,15 @@ instead of the software.
 - Firmware update. The upgrade tags are known and are permanently absent from
   the driver.
 
-**For upstreaming to `linux-media`**, still needed: a `checkpatch --strict`
-pass as a patch series rather than a file, review of the deferred-teardown
-approach by people who maintain `dvb_core` (there may be a sanctioned pattern
-this missed), a `Documentation/` entry, and — most of all — reports from
-hardware other than these two sticks.
+**For upstreaming to `linux-media`:** the mechanical work is done. There is a
+three-patch series against the current media tree — driver, an
+`admin-guide` page, and a MAINTAINERS entry — which passes
+`checkpatch --strict` clean apart from one known false positive, builds with
+`W=1` without a warning, and is clean under `sparse`. What is still needed is
+the part that cannot be automated: review of the deferred-teardown approach by
+people who maintain `dvb_core`, since there may be a sanctioned pattern this
+missed, a decision on synchronous kthreads versus URBs, and — most of all —
+reports from hardware other than these two sticks.
 
 If you own one of these, a report is worth more than anything else on this
 list.
