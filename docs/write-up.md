@@ -52,6 +52,12 @@ talk to the CI controller.
 
 So the driver is not a tuner driver. It is a **CI host**.
 
+One descriptor detail turns out to matter in practice. Each interface has
+exactly one altsetting, and the device **rejects `SET_INTERFACE`** — issuing it
+does not merely fail, it wedges both endpoints until the device is reset.
+Libusb and the kernel both like to set altsetting 0 as a matter of routine, so
+this has to be deliberately avoided rather than simply not done. (**Measured**.)
+
 ## 3. The Windows software does not use a tuner driver either
 
 **Measured.** Hauppauge's Windows stack does not present the stick through
@@ -454,6 +460,18 @@ instead of the software.
 - **Multi-PLP DVB-T2.** No multi-PLP transmission was reachable, so PLP field
   endianness is unconfirmed. Single-PLP works.
 - **Suspend/resume** across host sleep.
+- **Why the session dies when the host goes quiet.** The workaround is measured
+  and effective (§15); the mechanism inside the firmware is not known. The one
+  concrete hypothesis available — that EN 50221 Date/Time
+  `response_interval` was asking to be polled — was tested and disproved: the
+  module sends an interval of **0**.
+- **What the reported signal strength is scaled against.** Two sticks on the
+  same aerial and splitter, on the same muxes seconds apart, reported 58-94 %
+  and 10-62 % while delivering identical byte counts at identical error rates
+  (§16). Whether that is a per-unit calibration difference or something about
+  the two RF legs has not been separated, because it would need the feeds
+  physically swapped. The C/N figure and the error counters agreed between
+  units; treat the strength percentage as a per-unit indication only.
 - **Breadth.** Two sticks, one host, one transmitter, one country. Everything
   here could be true and still miss something that only appears elsewhere.
 
