@@ -456,6 +456,38 @@ The analysis tool was wrong to count those packets, not the driver. Continuity
 checks on DVB must exclude TEI-flagged packets, or they measure the atmosphere
 instead of the software.
 
+The same tool then made a quieter mistake. It took its second argument as a
+display *label*, and two later scripts passed it two capture files instead —
+so it analysed only the first and printed the result under the second's name.
+Nothing was wrong with the driver or with the captures, but for a while two
+sets of figures were attributed to the wrong stick. It was caught because a
+586 MHz DVB-T2 mux does not plausibly deliver the byte count of a 554 MHz
+DVB-T one. Both runs were re-analysed per file; the numbers here and in
+`STATUS.md` are the corrected ones, and the tool now treats every argument as
+a file. Measurement code needs the same suspicion as the thing being measured.
+
+Then the whole thing was handed to **TVHeadend** rather than to hand-driven
+tools, which is the case that actually matters to anyone using this. A stock
+TVHeadend 4.3 in a throwaway container, given only these two adapters, found
+both without configuration as ordinary `linuxdvb` inputs, scanned 554 MHz to
+29 services and 586 MHz (DVB-T2, PLP 0) to 13, and streamed a service from each
+simultaneously for five minutes: 397,486 and 1,067,923 packets, no sync errors,
+no TEI, and one continuity discontinuity — on which TVHeadend's own per-input
+counters agreed exactly, `cc=1` on the mux where our analyser saw it and `cc=0`
+on the other. The only driver-attributable noise in its log is
+`Unhandled ERROR_BIT_COUNT scale: 0`, which is TVHeadend observing that the
+driver reports BER and block counts as `FE_SCALE_NOT_AVAILABLE`. It does, and
+saying so is more honest than inventing a number.
+
+Finally, the released source was run on a second kernel. The machine was booted
+into **6.8.0-136-generic** with the DKMS-built module: both sticks registered,
+180 s of simultaneous streaming gave 4,813,884 packets with no discontinuities
+on the DVB-T2 leg and 3,249,624 with two on the DVB-T leg, an unbind and rebind
+of one stick left the other's 1,604,628 packets untouched, and `rmmod` and
+`modprobe` cycled cleanly — with, again, nothing in the kernel log. The
+per-unit strength disagreement reappeared unchanged (34 % against 90 %), which
+is at least consistent: it is a property of the units, not of the kernel.
+
 ## 17. What is left
 
 **Unknown / untested**, stated plainly:
@@ -475,8 +507,9 @@ instead of the software.
   the two RF legs has not been separated, because it would need the feeds
   physically swapped. The C/N figure and the error counters agreed between
   units; treat the strength percentage as a per-unit indication only.
-- **Breadth.** Two sticks, one host, one transmitter, one country. Everything
-  here could be true and still miss something that only appears elsewhere.
+- **Breadth.** Two sticks, one host, one transmitter, one country, two kernel
+  versions. Everything here could be true and still miss something that only
+  appears elsewhere.
 
 **Not implemented, deliberately:**
 

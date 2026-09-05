@@ -10,12 +10,13 @@ software that drives it from userspace rather than through a normal tuner
 driver, which is part of why it never got Linux support.
 
 > **Status: v0.1.0, experimental.** Developed and tested against two sticks on
-> one machine, on UK Freeview, on Linux 7.0. It works well there, but that is
-> the whole of the sample. Please report what happens on yours — see
+> one machine, on UK Freeview, on Linux 6.8 and 7.0. It works well there, but
+> that is the whole of the sample. Please report what happens on yours — see
 > [Reporting problems](#reporting-problems).
 
-**Kernel:** builds cleanly against 5.15, 6.1, 6.8 and 7.0 headers. Only 7.0 has
-been run against real hardware; the others are compile-only evidence.
+**Kernel:** builds cleanly against 5.15, 6.1, 6.8 and 7.0 headers. 6.8 and 7.0
+have also been run against real hardware; 5.15 and 6.1 are compile-only
+evidence.
 
 ## Supported hardware
 
@@ -47,6 +48,14 @@ Bus 001 Device 007: ID 29df:0280 SMIT CI Device
 - Multiple sticks on one host, tuned independently and simultaneously
 - Hotplug: plug, unplug and replug while other sticks keep streaming
 - TVHeadend, which detects it as a plain `linuxdvb` adapter
+
+Tested end to end: TVHeadend 4.3 found both sticks with no configuration,
+scanned a DVB-T mux to 29 services and a DVB-T2 mux to 13, and streamed both at
+once for five minutes with one continuity error in 1.47 million packets and
+none of its own error counters disagreeing. Ten minutes of simultaneous
+`dvbv5-zap` capture on two sticks moved 26.9 million packets with no sync
+errors and no TEI-flagged packets. Neither kernel logged a warning, oops or
+refcount complaint at any point.
 
 ## What does not work, or is untested
 
