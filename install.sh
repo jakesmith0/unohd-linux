@@ -134,6 +134,7 @@ if ! have apt-get; then
 fi
 if [ -r /etc/os-release ]; then
 	# In a subshell: os-release defines VERSION, which we use for our own.
+	# shellcheck source=/dev/null
 	say "  distribution  $(. /etc/os-release; echo "${PRETTY_NAME:-unknown}")"
 fi
 
@@ -197,6 +198,12 @@ if [ -n "$(printf %s "$NEED" | tr -d ' ')" ]; then
 	run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
 	# shellcheck disable=SC2086
 	if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $NEED; then
+		case "$NEED" in
+		*linux-headers-*) die "apt could not install: $NEED
+       If it is linux-headers-$KVER that is missing, this kernel has no
+       headers package.  On a custom or cloud kernel, install its matching
+       headers another way and rerun." ;;
+		esac
 		die "apt could not install: $NEED"
 	fi
 else
@@ -265,6 +272,19 @@ if have dkms && dkms status -m "$PKG" -v "$VERSION" 2>/dev/null |
 	ALREADY=1
 fi
 
+# What DKMS already has of ours: every registered version, and every kernel
+# some version is installed for.  dkms status prints either
+#   unohd-dvb/0.1.0, 6.8.0-1-generic, x86_64: installed     (dkms 3)
+#   unohd-dvb, 0.1.0, 6.8.0-1-generic, x86_64: installed    (dkms 2)
+OLD_VERSIONS=
+OLD_KERNELS=
+if have dkms; then
+	OLD_VERSIONS=$(dkms status -m "$PKG" 2>/dev/null |
+		sed -n "s|^${PKG}[/,] *\([^,:]*\).*|\1|p" | sort -u | tr '\n' ' ')
+	OLD_KERNELS=$(dkms status -m "$PKG" 2>/dev/null |
+		sed -n 's|.*, *\([^,]*\), *[^,]*: installed.*|\1|p' | sort -u | tr '\n' ' ')
+fi
+
 if [ "$ALREADY" = 1 ] && [ "$FORCE" != 1 ]; then
 	step "Already installed"
 	say "  $PKG/$VERSION is built and installed for $KVER"
@@ -272,10 +292,15 @@ if [ "$ALREADY" = 1 ] && [ "$FORCE" != 1 ]; then
 else
 	step "Installing $PKG/$VERSION through DKMS"
 
-	# A half-registered tree from an interrupted run would make dkms add fail.
-	if have dkms && dkms status -m "$PKG" -v "$VERSION" 2>/dev/null | grep -q .; then
-		run dkms remove -m "$PKG" -v "$VERSION" --all >/dev/null 2>&1 || true
-	fi
+	# Clear out every registered version of our own package first: a
+	# half-registered tree from an interrupted run makes dkms add fail, and an
+	# older release left registered would be rebuilt alongside this one on
+	# every kernel update.
+	for v in $OLD_VERSIONS; do
+		say "  dkms remove $PKG/$v"
+		run dkms remove -m "$PKG" -v "$v" --all >/dev/null 2>&1 || true
+		[ "$v" = "$VERSION" ] || run rm -rf "/usr/src/$PKG-$v"
+	done
 	run rm -rf "$DEST"
 	run mkdir -p "$DEST"
 	if [ "$DRY" = 1 ]; then
@@ -293,6 +318,15 @@ else
 	fi
 	run dkms install -m "$PKG" -v "$VERSION" ||
 		die "dkms install failed"
+
+	# The removal above covered every kernel, so put the build back on the
+	# other kernels that had one, where their headers are still installed.
+	for k in $OLD_KERNELS; do
+		[ "$k" != "$KVER" ] && [ -e "/lib/modules/$k/build" ] || continue
+		say "  also rebuilding for $k"
+		run dkms install -m "$PKG" -v "$VERSION" -k "$k" >/dev/null 2>&1 ||
+			warn "could not rebuild for $k; to retry: dkms install -m $PKG -v $VERSION -k $k"
+	done
 fi
 
 # Stable per-stick device names.  Additive; touches nothing else.
@@ -321,23 +355,34 @@ if lsmod | grep -q "^$MOD "; then
 		STALE=1
 		warn "the running module is in use and could not be unloaded"
 		if have fuser; then
-			HOLD=$(fuser /dev/dvb/*/frontend0 /dev/dvb/*/dvr0 2>/dev/null)
-			# shellcheck disable=SC2086  # deliberate word splitting
-			[ -n "$HOLD" ] && HOLD=$(ps -o comm= -p $HOLD 2>/dev/null |
-				sort -u | tr '\n' ' ')
+			# fuser exits 1 when it finds nothing; under set -e that
+			# would end the run here.
+			HOLD=$(fuser /dev/dvb/*/frontend0 /dev/dvb/*/demux0 \
+				/dev/dvb/*/dvr0 2>/dev/null) || true
+			if [ -n "$HOLD" ]; then
+				# shellcheck disable=SC2086  # deliberate word splitting
+				HOLD=$(ps -o comm= -p $HOLD 2>/dev/null |
+					sort -u | tr '\n' ' ') || true
+			fi
 			[ -n "$HOLD" ] && say "       in use by: $HOLD"
 		fi
 		say "       the new build takes effect once they release it, or after a reboot"
 	fi
 fi
 
-if ! modprobe "$MOD" 2>/tmp/unohd-modprobe.$$; then
-	err=$(cat /tmp/unohd-modprobe.$$); rm -f /tmp/unohd-modprobe.$$
+if ! modprobe "$MOD" 2>"$TMP/modprobe.err"; then
+	err=$(cat "$TMP/modprobe.err")
 	if [ "$SECUREBOOT" = enabled ]; then
+		# DKMS signs with Ubuntu's shim-signed key where it exists, and with
+		# its own key otherwise.
+		MOKCERT=/var/lib/dkms/mok.pub
+		if [ -f /var/lib/shim-signed/mok/MOK.der ]; then
+			MOKCERT=/var/lib/shim-signed/mok/MOK.der
+		fi
 		die "modprobe failed and Secure Boot is enabled: $err
 
        Secure Boot refuses unsigned modules.  Either:
-        - enrol the DKMS signing key:  sudo mokutil --import /var/lib/dkms/mok.pub
+        - enrol the DKMS signing key:  sudo mokutil --import $MOKCERT
           then reboot and confirm at the blue MOK screen (needs a password you
           set during that command, entered at the firmware prompt), or
         - turn Secure Boot off in your firmware settings.
@@ -345,7 +390,6 @@ if ! modprobe "$MOD" 2>/tmp/unohd-modprobe.$$; then
 	fi
 	die "modprobe $MOD failed: $err"
 fi
-rm -f /tmp/unohd-modprobe.$$
 if [ "$STALE" = 1 ]; then
 	say "  the previously loaded build is still the running one"
 else
