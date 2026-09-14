@@ -77,11 +77,13 @@ refcount complaint at any point.
   same read a tuned adapter already makes. If you ever see a stick stop
   locking after a long idle, `unbind`/`bind` that one device revives it and a
   bug report would be very welcome.
-- **Signal strength is not comparable between sticks.** Two units on the same
-  aerial and splitter, tuned to the same muxes seconds apart, reported 58-94 %
-  and 10-62 % while delivering identical byte counts with the same near-zero
-  error rates. Trust the C/N figure and the error counters; treat the strength
-  percentage as a per-unit indication only.
+- **Do not compare the strength figure between sticks.** Two sticks on the
+  same aerial, each on its own splitter output, tuned to the same muxes seconds
+  apart, reported 58-94 % and 10-62 % while delivering identical byte counts
+  with the same near-zero error rates. The gap was the same on Linux 6.8 and
+  7.0. Whether it comes from the sticks or from the two cable runs has not
+  been separated. Trust the C/N figure and the error counters; treat the
+  strength percentage as an indication for one stick on one feed.
 - Suspend/resume across a host sleep is untested.
 - Not yet submitted to `linux-media`; this is an out-of-tree module.
 

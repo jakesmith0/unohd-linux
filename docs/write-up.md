@@ -443,8 +443,10 @@ could not lock at all and that the other two reported as 0 % signal while
 locking anyway. The two sticks disagreed sharply with each other on reported
 strength, though: 58–94 % on one and 10–62 % on the other, on identical muxes
 seconds apart, while both returned the same byte counts with the same near-zero
-error rates. Whatever the strength figure is scaled against, it is not
-comparable between units — the C/N figure and the error counts were.
+error rates. Each stick was on its own splitter output, so this does not yet
+say whether the difference belongs to the sticks or to the two cable runs
+(§17). What it does say is that the strength figures could not be compared
+between them — the C/N figure and the error counts could.
 
 One measurement was initially misread, and the correction is instructive. An
 early dual-device capture showed 14 continuity discontinuities and what looked
@@ -485,8 +487,9 @@ into **6.8.0-136-generic** with the DKMS-built module: both sticks registered,
 on the DVB-T2 leg and 3,249,624 with two on the DVB-T leg, an unbind and rebind
 of one stick left the other's 1,604,628 packets untouched, and `rmmod` and
 `modprobe` cycled cleanly — with, again, nothing in the kernel log. The
-per-unit strength disagreement reappeared unchanged (34 % against 90 %), which
-is at least consistent: it is a property of the units, not of the kernel.
+strength disagreement between the two sticks reappeared unchanged (34 % against
+90 %). That shows it is stable across the two kernels tested; it does not
+settle whether it comes from the sticks or from their feeds (§17).
 
 ## 17. What is left
 
@@ -501,11 +504,11 @@ is at least consistent: it is a property of the units, not of the kernel.
   `response_interval` was asking to be polled — was tested and disproved: the
   module sends an interval of **0**.
 - **What the reported signal strength is scaled against.** Two sticks on the
-  same aerial and splitter, on the same muxes seconds apart, reported 58-94 %
+  same aerial, each on its own splitter output, on the same muxes seconds apart, reported 58-94 %
   and 10-62 % while delivering identical byte counts at identical error rates
-  (§16). Whether that is a per-unit calibration difference or something about
-  the two RF legs has not been separated, because it would need the feeds
-  physically swapped. The C/N figure and the error counters agreed between
+  (§16), and the gap was the same on 6.8 and 7.0. Whether that is a per-unit
+  calibration difference or something about the two RF legs has not been
+  separated, because it would need the feeds physically swapped. The C/N figure and the error counters agreed between
   units; treat the strength percentage as a per-unit indication only.
 - **Breadth.** Two sticks, one host, one transmitter, one country, two kernel
   versions. Everything here could be true and still miss something that only
