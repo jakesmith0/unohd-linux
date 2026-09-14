@@ -35,12 +35,12 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/kref.h>
 #include <linux/list.h>
 #include <linux/usb.h>
 #include <linux/kthread.h>
 #include <linux/mutex.h>
 #include <linux/completion.h>
+#include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/time.h>
@@ -105,12 +105,13 @@
 
 #define UNOHD_MAX_SESS 32
 
-static int debug;
-module_param(debug, int, 0644);
-MODULE_PARM_DESC(debug, "enable protocol tracing");
+/* How long a tune waits for the SAS session to come back after a resume. */
+#define UNOHD_SAS_WAIT_MS 5000
 
-#define dbg(d, fmt, ...) \
-	do { if (debug) dev_info(&(d)->udev->dev, fmt, ##__VA_ARGS__); } while (0)
+DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
+
+/* Protocol tracing, through dynamic debug. */
+#define dbg(d, fmt, ...) dev_dbg(&(d)->udev->dev, fmt, ##__VA_ARGS__)
 
 struct unohd_sess {
 	u16 ssnb;
@@ -130,6 +131,7 @@ struct unohd {
 	bool sas_connected;
 	bool sas_requested;
 	u8 sas_msgnb;
+	wait_queue_head_t sas_wq;	/* sas_connected or disconnected set */
 
 	/*
 	 * EN 50221 date_time.  A non-zero response_interval in date_time_enq
@@ -174,9 +176,6 @@ struct unohd {
 	/* guards feed_count and the TS thread's start/stop */
 	struct mutex feed_lock;
 	u8 *ts_buf;
-
-	/* see unohd_put() */
-	struct list_head zombie;
 };
 
 /* ---------------------------------------------------------------- wire */
@@ -196,7 +195,7 @@ static int unohd_tx(struct unohd *d, const u8 *b, int n)
 	mutex_unlock(&d->tx_lock);
 
 	if (ret)
-		dev_warn(&d->udev->dev, "TX failed: %d\n", ret);
+		dev_warn_ratelimited(&d->udev->dev, "TX failed: %d\n", ret);
 	return ret;
 }
 
@@ -434,9 +433,8 @@ static void unohd_on_apdu(struct unohd *d, u16 ssnb, u32 tag,
 		break;
 	case 0x9f8440:		/* date_time_enq */
 		if (d->dt_interval != (len ? p[0] : 0))
-			dev_info(&d->udev->dev,
-				 "date_time response_interval = %u s\n",
-				 len ? p[0] : 0);
+			dbg(d, "date_time response_interval = %u s\n",
+			    len ? p[0] : 0);
 		d->dt_ssnb = ssnb;
 		d->dt_interval = len ? p[0] : 0;
 		d->dt_next = jiffies + msecs_to_jiffies(d->dt_interval * 1000);
@@ -456,8 +454,8 @@ static void unohd_on_apdu(struct unohd *d, u16 ssnb, u32 tag,
 			d->last_cmd = jiffies;
 			schedule_delayed_work(&d->keepalive,
 					      msecs_to_jiffies(UNOHD_KEEPALIVE_MS));
-			dev_info(&d->udev->dev,
-				 "SAS connected on session %u\n", ssnb);
+			wake_up_all(&d->sas_wq);
+			dbg(d, "SAS connected on session %u\n", ssnb);
 		}
 		break;
 	case 0x9f9a07:		/* sas_async_msg */
@@ -611,16 +609,30 @@ static int unohd_pump_thread(void *arg)
 {
 	struct unohd *d = arg;
 	unsigned long deadline = jiffies + msecs_to_jiffies(30000);
+	bool warned = false;
 	int ret, actual;
 
 	while (!kthread_should_stop()) {
 		ret = usb_interrupt_msg(d->udev,
 					usb_rcvintpipe(d->udev, EP_CMD_IN),
 					d->rxbuf, 2048, &actual, 400);
-		if (!ret && actual > 0)
-			unohd_on_spdu(d, d->rxbuf, actual);
-		else if (ret && ret != -ETIMEDOUT && ret != -EAGAIN)
-			break;
+		if (!ret) {
+			warned = false;
+			if (actual > 0)
+				unohd_on_spdu(d, d->rxbuf, actual);
+		} else if (ret != -ETIMEDOUT && ret != -EAGAIN) {
+			/*
+			 * Never return before kthread_stop(): the task would
+			 * be gone by the time disconnect() stops it.  An unplug
+			 * lands here until disconnect() arrives, so back off.
+			 */
+			if (!warned && ret != -ENODEV && ret != -ESHUTDOWN)
+				dev_warn(&d->udev->dev,
+					 "command endpoint error %d\n", ret);
+			warned = true;
+			schedule_timeout_interruptible(msecs_to_jiffies(100));
+			continue;
+		}
 
 		if (d->dt_interval && time_after(jiffies, d->dt_next)) {
 			d->dt_next = jiffies +
@@ -628,8 +640,9 @@ static int unohd_pump_thread(void *arg)
 			unohd_send_date_time(d, d->dt_ssnb);
 		}
 
-		if (!d->dvb_registered && d->sas_connected && !d->dvb_failed) {
-			if (unohd_register_dvb(d)) {
+		if (d->sas_connected) {
+			if (!d->dvb_registered && !d->dvb_failed &&
+			    unohd_register_dvb(d)) {
 				/*
 				 * Registration allocates an adapter number and
 				 * unwinds on failure.  Retrying it once per
@@ -640,8 +653,7 @@ static int unohd_pump_thread(void *arg)
 				dev_err(&d->udev->dev,
 					"DVB registration failed\n");
 			}
-		} else if (!d->dvb_registered && !d->dvb_failed &&
-			   time_after(jiffies, deadline)) {
+		} else if (time_after(jiffies, deadline)) {
 			dev_err(&d->udev->dev,
 				"module never completed the SAS handshake\n");
 			deadline = jiffies + msecs_to_jiffies(30000);
@@ -650,18 +662,48 @@ static int unohd_pump_thread(void *arg)
 	return 0;
 }
 
+/* Only ever called with the pump known to be running or never started. */
+static void unohd_stop_pump(struct unohd *d)
+{
+	if (d->pump_task) {
+		kthread_stop(d->pump_task);
+		d->pump_task = NULL;
+	}
+}
+
+static int unohd_start_pump(struct unohd *d)
+{
+	struct task_struct *t;
+
+	t = kthread_run(unohd_pump_thread, d, "unohd-spdu/%s",
+			d->udev->devpath);
+	if (IS_ERR(t))
+		return PTR_ERR(t);
+	d->pump_task = t;
+	return 0;
+}
+
 static int unohd_ts_thread(void *arg)
 {
 	struct unohd *d = arg;
+	bool warned = false;
 	int ret, actual;
 
 	while (!kthread_should_stop()) {
 		ret = usb_bulk_msg(d->udev, usb_rcvbulkpipe(d->udev, EP_TS_IN),
 				   d->ts_buf, TS_BUFSZ, &actual, 500);
-		if (!ret && actual > 0)
+		/* A timed-out transfer can still have filled part of the buffer. */
+		if ((!ret || ret == -ETIMEDOUT) && actual > 0)
 			dvb_dmx_swfilter(&d->demux, d->ts_buf, actual);
-		else if (ret && ret != -ETIMEDOUT)
-			usleep_range(1000, 2000);
+		if (!ret)
+			warned = false;
+		if (!ret || ret == -ETIMEDOUT)
+			continue;
+
+		if (!warned && ret != -ENODEV && ret != -ESHUTDOWN)
+			dev_warn(&d->udev->dev, "TS endpoint error %d\n", ret);
+		warned = true;
+		schedule_timeout_interruptible(msecs_to_jiffies(20));
 	}
 	return 0;
 }
@@ -680,12 +722,22 @@ static int unohd_fe_set_frontend(struct dvb_frontend *fe)
 	int ret;
 
 	/*
-	 * The PLP field is not optional.  0xFFFF is not "any PLP" — it routes
-	 * no PLP to the output, and a DVB-T2 mux then locks perfectly and
-	 * delivers nothing.  Default to PLP 0 when no stream id is set.
+	 * DTV_STREAM_ID selects the DVB-T2 PLP, 0-255.  The PLP field is not
+	 * optional: 0xFFFF is not "any PLP" — it routes no PLP to the output,
+	 * and a DVB-T2 mux then locks perfectly and delivers nothing.  So
+	 * NO_STREAM_ID_FILTER means PLP 0, and ids that cannot be a PLP are
+	 * refused rather than truncated.
+	 *
+	 * Only PLP 0 has been tested; no multi-PLP mux was reachable.  The id
+	 * goes in byte 10 with byte 11 zero, and whether those two bytes are
+	 * one 16-bit field, and in which order, is not known.
 	 */
-	if (c->stream_id != NO_STREAM_ID_FILTER)
-		plp = c->stream_id & 0xff;
+	if (c->delivery_system == SYS_DVBT2 &&
+	    c->stream_id != NO_STREAM_ID_FILTER) {
+		if (c->stream_id > 255)
+			return -EINVAL;
+		plp = c->stream_id;
+	}
 
 	memset(b, 0, sizeof(b));
 	b[0] = khz;
@@ -697,19 +749,20 @@ static int unohd_fe_set_frontend(struct dvb_frontend *fe)
 	b[12] = bw;
 	b[13] = std;		/* advisory: the demod auto-detects T vs T2 */
 
-	dev_info(&d->udev->dev, "tune %u kHz bw %u %s plp %u\n",
-		 khz, bw, std == 3 ? "DVB-T2" : "DVB-T", plp);
+	dbg(d, "tune %u kHz bw %u %s plp %u\n",
+	    khz, bw, std == 3 ? "DVB-T2" : "DVB-T", plp);
+
+	/* After a resume the device announces a new session; give it time. */
+	if (!wait_event_timeout(d->sas_wq,
+				READ_ONCE(d->sas_connected) ||
+				READ_ONCE(d->disconnected),
+				msecs_to_jiffies(UNOHD_SAS_WAIT_MS)))
+		return -ETIMEDOUT;
 
 	d->locked = false;
 	ret = unohd_sas_cmd(d, SMIT_TUNER_LOCK, b, sizeof(b),
 			    SMIT_TUNER_LOCK_RSP, NULL, 0, 5000);
 	return ret < 0 ? ret : 0;
-}
-
-static int unohd_fe_get_frontend(struct dvb_frontend *fe,
-				 struct dtv_frontend_properties *c)
-{
-	return 0;			/* cache already holds what we set */
 }
 
 static int unohd_fe_read_status(struct dvb_frontend *fe,
@@ -718,12 +771,20 @@ static int unohd_fe_read_status(struct dvb_frontend *fe,
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	struct unohd *d = fe->demodulator_priv;
 	static const u8 gsta[4] = "GSTA";
+	bool locked;
+	int ret;
 
-	unohd_sas_cmd(d, SMIT_TUNER_STATUS, gsta, sizeof(gsta),
-		      SMIT_TUNER_STATUS_RSP, NULL, 0, 2000);
+	ret = unohd_sas_cmd(d, SMIT_TUNER_STATUS, gsta, sizeof(gsta),
+			    SMIT_TUNER_STATUS_RSP, NULL, 0, 2000);
 
-	*status = d->locked ? (FE_HAS_SIGNAL | FE_HAS_CARRIER | FE_HAS_VITERBI |
-			       FE_HAS_SYNC | FE_HAS_LOCK) : 0;
+	/*
+	 * -ENODEV: no session to ask, so there is no lock to report.  On a
+	 * timeout the last answer stands; the next poll will correct it.
+	 */
+	locked = d->locked && ret != -ENODEV;
+
+	*status = locked ? (FE_HAS_SIGNAL | FE_HAS_CARRIER | FE_HAS_VITERBI |
+			    FE_HAS_SYNC | FE_HAS_LOCK) : 0;
 
 	/*
 	 * The module reports strength and quality as 0..100 with no stated
@@ -733,7 +794,7 @@ static int unohd_fe_read_status(struct dvb_frontend *fe,
 	 */
 	c->strength.len = 1;
 	c->cnr.len = 1;
-	if (d->locked) {
+	if (locked) {
 		c->strength.stat[0].scale = FE_SCALE_RELATIVE;
 		c->strength.stat[0].uvalue = min_t(u32, d->strength, 100) * 655;
 		c->cnr.stat[0].scale = FE_SCALE_RELATIVE;
@@ -757,7 +818,7 @@ static int unohd_fe_read_signal_strength(struct dvb_frontend *fe, u16 *st)
 {
 	struct unohd *d = fe->demodulator_priv;
 
-	*st = (u16)d->strength * 655;
+	*st = min_t(u16, d->strength, 100) * 655;
 	return 0;
 }
 
@@ -765,19 +826,7 @@ static int unohd_fe_read_snr(struct dvb_frontend *fe, u16 *snr)
 {
 	struct unohd *d = fe->demodulator_priv;
 
-	*snr = (u16)d->quality * 655;
-	return 0;
-}
-
-static int unohd_fe_read_ber(struct dvb_frontend *fe, u32 *ber)
-{
-	*ber = 0;
-	return 0;
-}
-
-static int unohd_fe_read_ucblocks(struct dvb_frontend *fe, u32 *ucb)
-{
-	*ucb = 0;
+	*snr = min_t(u16, d->quality, 100) * 655;
 	return 0;
 }
 
@@ -802,13 +851,11 @@ static const struct dvb_frontend_ops unohd_fe_ops = {
 			FE_CAN_2G_MODULATION | FE_CAN_MULTISTREAM,
 	},
 	.set_frontend		= unohd_fe_set_frontend,
-	.get_frontend		= unohd_fe_get_frontend,
 	.read_status		= unohd_fe_read_status,
 	.read_signal_strength	= unohd_fe_read_signal_strength,
 	.read_snr		= unohd_fe_read_snr,
-	.read_ber		= unohd_fe_read_ber,
-	.read_ucblocks		= unohd_fe_read_ucblocks,
 	.get_tune_settings	= unohd_fe_get_tune_settings,
+	/* .release is set once registered; see unohd_fe_release() */
 };
 
 /* -------------------------------------------------------------- demux */
@@ -832,6 +879,19 @@ static void unohd_stop_ts_locked(struct unohd *d)
 	kthread_stop(t);
 }
 
+static int unohd_start_ts_locked(struct unohd *d)
+{
+	struct task_struct *t;
+
+	lockdep_assert_held(&d->feed_lock);
+	usb_clear_halt(d->udev, usb_rcvbulkpipe(d->udev, EP_TS_IN));
+	t = kthread_run(unohd_ts_thread, d, "unohd-ts/%s", d->udev->devpath);
+	if (IS_ERR(t))
+		return PTR_ERR(t);
+	d->ts_task = t;
+	return 0;
+}
+
 static int unohd_start_feed(struct dvb_demux_feed *feed)
 {
 	struct unohd *d = feed->demux->priv;
@@ -842,16 +902,10 @@ static int unohd_start_feed(struct dvb_demux_feed *feed)
 		mutex_unlock(&d->feed_lock);
 		return -ENODEV;
 	}
-	if (d->feed_count++ == 0) {
-		usb_clear_halt(d->udev, usb_rcvbulkpipe(d->udev, EP_TS_IN));
-		d->ts_task = kthread_run(unohd_ts_thread, d, "unohd-ts/%s",
-					 d->udev->devpath);
-		if (IS_ERR(d->ts_task)) {
-			ret = PTR_ERR(d->ts_task);
-			d->ts_task = NULL;
-			d->feed_count--;
-		}
-	}
+	if (d->feed_count == 0)
+		ret = unohd_start_ts_locked(d);
+	if (!ret)
+		d->feed_count++;
 	mutex_unlock(&d->feed_lock);
 	return ret;
 }
@@ -869,13 +923,46 @@ static int unohd_stop_feed(struct dvb_demux_feed *feed)
 	return 0;
 }
 
+static void unohd_free(struct unohd *d)
+{
+	usb_put_dev(d->udev);
+	kfree(d->ts_buf);
+	kfree(d->rxbuf);
+	kfree(d->txbuf);
+	kfree(d);
+}
+
+/*
+ * dvb_core holds a reference to struct dvb_frontend for as long as an
+ * application has frontend0 open, and dvb_frontend_release() dereferences both
+ * fe and fe->dvb (which is &d->adap) on the close.  Both live inside struct
+ * unohd, so d must outlive the last reference, which may be dropped after
+ * disconnect() has returned.  Freeing d in disconnect() with an fd still open
+ * was a reproducible use-after-free.  dvb_core calls this when that last
+ * reference goes.
+ *
+ * With CONFIG_MEDIA_ATTACH, dvb_frontend_invoke_release() follows this with
+ * dvb_detach(), a symbol_put_addr() that drops a reference on the module this
+ * function lives in: the one dvb_attach() takes on a separately built demod
+ * module.  Nothing attached this driver, so take that reference here.  The
+ * module is still pinned while this runs, by the device node's fops on a close
+ * and by the caller in disconnect().
+ */
+static void unohd_fe_release(struct dvb_frontend *fe)
+{
+	struct unohd *d = fe->demodulator_priv;
+
+	if (IS_ENABLED(CONFIG_MEDIA_ATTACH))
+		__module_get(THIS_MODULE);
+	unohd_free(d);
+}
+
 static int unohd_register_dvb(struct unohd *d)
 {
-	short adapter_nr[] = { -1 };
 	int ret;
 
 	ret = dvb_register_adapter(&d->adap, "WinTV-UnoHD", THIS_MODULE,
-				   &d->udev->dev, adapter_nr);
+				   &d->udev->dev, adapter_nr);	/* module option */
 	if (ret < 0)
 		return ret;
 
@@ -903,13 +990,21 @@ static int unohd_register_dvb(struct unohd *d)
 	d->fe.demodulator_priv = d;
 	ret = dvb_register_frontend(&d->adap, &d->fe);
 	if (ret < 0)
-		goto err_net;
+		goto err_fe;
 
+	/* From here on the last frontend reference frees d. */
+	d->fe.ops.release = unohd_fe_release;
 	d->dvb_registered = true;
-	dev_info(&d->udev->dev, "registered DVB adapter %d\n", d->adap.num);
+	dbg(d, "registered DVB adapter %d\n", d->adap.num);
 	return 0;
 
-err_net:
+err_fe:
+	/*
+	 * A failed dvb_register_frontend() can leave its private data and one
+	 * reference behind; detach drops it.  ops.release is still NULL, so
+	 * this does not free d.
+	 */
+	dvb_frontend_detach(&d->fe);
 	dvb_net_release(&d->dvbnet);
 err_dmxdev:
 	dvb_dmxdev_release(&d->dmxdev);
@@ -920,96 +1015,27 @@ err_adapter:
 	return ret;
 }
 
+/*
+ * Everything but the final dvb_frontend_detach(), which disconnect() does last
+ * because it may free d.  The frontend goes first, as in dvb-usb-v2: that stops
+ * its thread, so nothing calls our ops from there during the rest.  Marking it
+ * removed beforehand makes open() and the ioctls of an fd that is still open
+ * return -ENODEV; unregistering leaves it non-zero, so that holds afterwards.
+ *
+ * dvb_net_release() and dvb_dmxdev_release() wait for their last user to
+ * close.  Only frontend0 can outlive this; see unohd_fe_release().
+ */
 static void unohd_unregister_dvb(struct unohd *d)
 {
 	if (!d->dvb_registered)
 		return;
-	/*
-	 * Teardown order as the in-tree usb drivers do it.
-	 *
-	 * DVB_FE_DEVICE_REMOVED first: dvb_frontend_ioctl() and
-	 * dvb_frontend_open() both check fe->exit and return -ENODEV, which is
-	 * what stops dvb_core calling our ops with a demodulator_priv that is
-	 * about to go away.
-	 *
-	 * dvb_frontend_detach() does NOT wait for an application to close
-	 * frontend0 -- dvb_register_frontend() leaves two references and each
-	 * open() takes another, so unregister+detach here can drop the count to
-	 * one, not zero.  Whether it is then safe to free d is decided in
-	 * unohd_put().
-	 */
-	d->fe.exit = DVB_FE_DEVICE_REMOVED;
 
+	d->fe.exit = DVB_FE_DEVICE_REMOVED;
+	dvb_unregister_frontend(&d->fe);
 	dvb_net_release(&d->dvbnet);
 	dvb_dmxdev_release(&d->dmxdev);
 	dvb_dmx_release(&d->demux);
-	dvb_unregister_frontend(&d->fe);
-	dvb_frontend_detach(&d->fe);
 	dvb_unregister_adapter(&d->adap);
-	d->dvb_registered = false;
-}
-
-/*
- * dvb_core holds a reference to struct dvb_frontend for as long as an
- * application has frontend0 open, and dvb_frontend_release() dereferences both
- * fe and fe->dvb (which is &d->adap) on the close.  Both live inside struct
- * unohd.  Freeing d in disconnect() while an fd was still open was a
- * use-after-free: a general protection fault on a non-canonical address in
- * __wake_up() from dvb_frontend_release(), reproduced on demand.
- *
- * The sanctioned escape is fe->ops.release, which __dvb_frontend_free() calls
- * once the last reference goes.  We cannot use it.  CONFIG_MEDIA_ATTACH is set
- * on this kernel, and dvb_frontend_invoke_release() then follows ops.release
- * with dvb_detach(), i.e. symbol_put_addr(), which would module_put() this
- * module for a reference dvb_attach() never took.  That hook belongs to
- * separately built demod modules; a self-contained driver is not one.
- *
- * So disconnect() frees d only once dvb_core has demonstrably let go, and
- * otherwise parks it here.  dvbdev.c sets dvbdevfops->owner = adap->module, so
- * an open device node pins this module and module_exit cannot run until every
- * fd has been closed -- which is what makes draining the list there safe.
- */
-static DEFINE_MUTEX(unohd_zombie_lock);
-static LIST_HEAD(unohd_zombies);
-
-static void unohd_free(struct unohd *d)
-{
-	usb_put_dev(d->udev);
-	kfree(d->ts_buf);
-	kfree(d->rxbuf);
-	kfree(d->txbuf);
-	kfree(d);
-}
-
-static void unohd_put(struct unohd *d)
-{
-	/*
-	 * Zero covers both "never registered" (kzalloc) and "registered, and
-	 * dvb_core has already dropped its last reference".  Anything else and
-	 * dvb_core can still reach into d, so it has to outlive us.
-	 */
-	if (kref_read(&d->fe.refcount) == 0) {
-		unohd_free(d);
-		return;
-	}
-
-	dev_info(&d->udev->dev,
-		 "frontend still open; deferring teardown to module unload\n");
-	mutex_lock(&unohd_zombie_lock);
-	list_add(&d->zombie, &unohd_zombies);
-	mutex_unlock(&unohd_zombie_lock);
-}
-
-static void unohd_drain_zombies(void)
-{
-	struct unohd *d, *tmp;
-
-	mutex_lock(&unohd_zombie_lock);
-	list_for_each_entry_safe(d, tmp, &unohd_zombies, zombie) {
-		list_del(&d->zombie);
-		unohd_free(d);
-	}
-	mutex_unlock(&unohd_zombie_lock);
 }
 
 /* ---------------------------------------------------------- usb glue */
@@ -1139,8 +1165,9 @@ static int unohd_probe(struct usb_interface *intf,
 		return -ENOMEM;
 
 	/*
-	 * A parked struct unohd outlives the USB device, and dvb_core still
-	 * reaches fe->dvb->device, which is &udev->dev, from its release path.
+	 * struct unohd can outlive the USB device, until the last close of
+	 * frontend0, and dvb_core still reaches fe->dvb->device, which is
+	 * &udev->dev, from its release path.
 	 */
 	d->udev = usb_get_dev(udev);
 	d->intf_cmd = intf;
@@ -1149,6 +1176,7 @@ static int unohd_probe(struct usb_interface *intf,
 	mutex_init(&d->cmd_lock);
 	mutex_init(&d->feed_lock);
 	init_completion(&d->cmd_done);
+	init_waitqueue_head(&d->sas_wq);
 	INIT_DELAYED_WORK(&d->keepalive, unohd_keepalive_work);
 	d->last_cmd = jiffies;
 
@@ -1179,15 +1207,11 @@ static int unohd_probe(struct usb_interface *intf,
 
 	usb_set_intfdata(intf, d);
 
-	d->pump_task = kthread_run(unohd_pump_thread, d, "unohd-spdu/%s",
-				   udev->devpath);
-	if (IS_ERR(d->pump_task)) {
-		ret = PTR_ERR(d->pump_task);
-		d->pump_task = NULL;
+	ret = unohd_start_pump(d);
+	if (ret)
 		goto err_release;
-	}
 
-	dev_info(&udev->dev, "WinTV-UnoHD: bringing up EN 50221 session layer\n");
+	dbg(d, "bringing up the EN 50221 session layer\n");
 	return 0;
 
 err_release:
@@ -1202,6 +1226,7 @@ err_free:
 static void unohd_disconnect(struct usb_interface *intf)
 {
 	struct unohd *d = usb_get_intfdata(intf);
+	bool registered;
 
 	if (!d)
 		return;
@@ -1223,13 +1248,13 @@ static void unohd_disconnect(struct usb_interface *intf)
 	unohd_stop_ts_locked(d);
 	mutex_unlock(&d->feed_lock);
 
+	/* The pump arms the keepalive, so it has to stop first. */
+	unohd_stop_pump(d);
+	d->sas_connected = false;	/* a command still in flight fails fast */
+	wake_up_all(&d->sas_wq);
 	cancel_delayed_work_sync(&d->keepalive);
 
-	if (d->pump_task) {
-		kthread_stop(d->pump_task);
-		d->pump_task = NULL;
-	}
-
+	registered = d->dvb_registered;
 	unohd_unregister_dvb(d);
 
 	usb_set_intfdata(intf, NULL);
@@ -1238,7 +1263,97 @@ static void unohd_disconnect(struct usb_interface *intf)
 		usb_driver_release_interface(&unohd_driver, d->intf_ts);
 	}
 
-	unohd_put(d);
+	/* Frees d now, or on the last close of frontend0.  Do not touch it. */
+	if (registered)
+		dvb_frontend_detach(&d->fe);
+	else
+		unohd_free(d);
+}
+
+/*
+ * Without these the USB core unbinds the driver across a system sleep, and an
+ * unbind with a demux or dvr fd open waits in dvb_dmxdev_release() for
+ * userspace that is frozen: the machine never finishes suspending.
+ *
+ * The module keeps its session and its lock across a USB suspend, so a plain
+ * resume only restarts the transfers and a stream that was open carries on.
+ * A reset loses the session.  After one the module normally drops off the bus
+ * and comes back as a new device, which is an unplug and a fresh probe;
+ * unohd_reset_resume() rebuilds the session for the case where it does not.
+ *
+ * The frontend thread and every application are frozen across all of this.
+ * Nothing here returns an error: a failed resume would get the driver unbound,
+ * which is the hang above.
+ */
+static int unohd_suspend(struct usb_interface *intf, pm_message_t msg)
+{
+	struct unohd *d = usb_get_intfdata(intf);
+
+	if (!d || intf != d->intf_cmd)
+		return 0;
+
+	mutex_lock(&d->feed_lock);
+	unohd_stop_ts_locked(d);	/* feed_count stays, for resume */
+	mutex_unlock(&d->feed_lock);
+
+	unohd_stop_pump(d);
+	cancel_delayed_work_sync(&d->keepalive);
+	return 0;
+}
+
+static void unohd_restart(struct unohd *d)
+{
+	int ret;
+
+	ret = unohd_start_pump(d);
+	if (ret)
+		dev_err(&d->udev->dev, "cannot restart session pump: %d\n", ret);
+
+	mutex_lock(&d->feed_lock);
+	if (d->feed_count) {
+		ret = unohd_start_ts_locked(d);
+		if (ret)
+			dev_err(&d->udev->dev, "cannot restart TS: %d\n", ret);
+	}
+	mutex_unlock(&d->feed_lock);
+}
+
+/* The session survived: restart the transfers and the keepalive. */
+static int unohd_resume(struct usb_interface *intf)
+{
+	struct unohd *d = usb_get_intfdata(intf);
+
+	if (!d || intf != d->intf_cmd)
+		return 0;
+
+	unohd_restart(d);
+	if (d->sas_connected)
+		schedule_delayed_work(&d->keepalive,
+				      msecs_to_jiffies(UNOHD_KEEPALIVE_MS));
+	return 0;
+}
+
+static int unohd_reset_resume(struct usb_interface *intf)
+{
+	struct unohd *d = usb_get_intfdata(intf);
+
+	if (!d || intf != d->intf_cmd)
+		return 0;
+
+	/* The old session died with the reset. */
+	d->nsess = 0;
+	d->next_ssnb = 1;
+	d->sas_connected = false;
+	d->sas_requested = false;
+	d->sas_msgnb = 0;
+	d->dt_interval = 0;
+	d->locked = false;
+	d->last_cmd = jiffies;
+
+	unohd_restart(d);
+	if (d->dvb_registered)
+		dvb_frontend_resume(&d->fe);
+	return 0;
 }
 
 static const struct usb_device_id unohd_table[] = {
@@ -1251,6 +1366,9 @@ static struct usb_driver unohd_driver = {
 	.name		= DRIVER_NAME,
 	.probe		= unohd_probe,
 	.disconnect	= unohd_disconnect,
+	.suspend	= unohd_suspend,
+	.resume		= unohd_resume,
+	.reset_resume	= unohd_reset_resume,
 	.id_table	= unohd_table,
 };
 
@@ -1262,7 +1380,6 @@ static int __init unohd_init(void)
 static void __exit unohd_exit(void)
 {
 	usb_deregister(&unohd_driver);
-	unohd_drain_zombies();
 	unohd_drop_reset_recs();
 }
 

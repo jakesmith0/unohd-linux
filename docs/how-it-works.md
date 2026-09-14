@@ -113,6 +113,12 @@ For DVB-T2, `0xFFFF` is not "any PLP". Send it and the demodulator reports a
 no transport stream at all. Send the actual PLP id and the same mux streams at
 full rate.
 
+So the driver never sends it. An application that leaves `DTV_STREAM_ID` unset
+passes `NO_STREAM_ID_FILTER`, and the driver turns that into PLP 0; an id above
+255 cannot be a PLP and is refused with `-EINVAL` rather than truncated. Only
+PLP 0 has been tested, and whether the PLP bytes are one 16-bit field, and in
+which order, is still unknown.
+
 A lock with no data is the confusing failure mode here, and this is the usual
 cause.
 
@@ -161,7 +167,7 @@ The driver sends a `GSTA` status read once a minute when nothing else has gone
 out. It is the same read a tuned adapter makes constantly, so a streaming
 adapter adds no traffic at all.
 
-## Lifecycle, and why the driver defers its own teardown
+## Lifecycle: the last close of `frontend0` frees the driver's state
 
 `dvb_register_frontend()` deliberately leaves the frontend's reference count at
 two, and every `open()` of `frontend0` adds another. `dvb_frontend_detach()`
@@ -170,16 +176,24 @@ while something holds `frontend0` open drops the count to one, not zero — and
 if the driver frees its state there, the eventual `close()` walks freed memory
 inside `dvb_frontend_release()`.
 
-The sanctioned hook for this is `fe->ops.release`, and it is unusable in a
-self-contained module: with `CONFIG_MEDIA_ATTACH=y`,
-`dvb_frontend_invoke_release()` follows it with `symbol_put_addr()`, dropping a
-module reference that `dvb_attach()` never took.
+The driver's state therefore lives until `dvb_core` drops its last frontend
+reference, and `dvb_core` frees it through the frontend's `ops.release` hook.
+That is either at disconnect, when nothing has `frontend0` open, or at the
+application's final `close()` afterwards. The hook is set only once
+registration has succeeded, so a failed probe still unwinds and frees
+normally. `probe` holds a reference on the USB device for the same reason:
+`dvb_core` still reaches `fe->dvb->device` from the release path.
 
-So the driver frees its state only when the frontend's reference count has
-actually reached zero, and otherwise parks it on a list drained at module
-unload. That is safe because an open DVB device node pins the module
-(`dvbdev` sets `fops->owner` to the adapter's module), so module unload cannot
-run while any descriptor is still open.
+There is one catch. The hook was designed for separately built demodulator
+modules. With `CONFIG_MEDIA_ATTACH=y`, `dvb_frontend_invoke_release()` follows
+it with `dvb_detach()`, which drops a reference on the module the hook lives
+in: the reference that `dvb_attach()` would have taken. Nothing attached this
+driver, so the hook takes that reference itself just before it is dropped.
+The module cannot unload while the hook runs. On a close, the open device node
+pins it (`dvbdev` sets `fops->owner` to the adapter's module); at disconnect,
+the USB core is still inside the driver.
 
-This is described at greater length, with the crash that found it, in
-[`write-up.md`](write-up.md).
+v0.1.0 did this differently. It checked the frontend's reference count at
+disconnect and parked the state on a list drained at module unload, which
+worked but read `dvb_core` internals and held the memory until unload. The
+crash that found the problem is described in [`write-up.md`](write-up.md).

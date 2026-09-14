@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+From a maintainer-style review of v0.1.0 ahead of submission to `linux-media`.
+
+### Added
+
+- Suspend and resume. Without these callbacks the USB core unbinds the driver
+  across a system sleep, and with a `demux0` or `dvr0` handle open that unbind
+  waits for a frozen application and the suspend never finishes. The module
+  keeps its session across a USB suspend, so resume only restarts the
+  transfers. Tested with `pm_test=devices`, which suspends and resumes every
+  device without putting the machine to sleep. Both sticks kept their USB and
+  adapter numbers, and streams that were open carried on within a second of
+  resume at the same rate, with one continuity-counter jump per PID. A real
+  sleep has not been tried.
+- `adapter_nr` module parameter, as in other DVB drivers.
+
+### Changed
+
+- Protocol tracing uses the kernel's dynamic debug (`dyndbg=+p`) instead of
+  the `debug` parameter, which is gone. The per-tune log line is now part of
+  that tracing.
+- An unplugged stick whose `frontend0` is still open is freed when the last
+  handle closes, through the frontend's release hook. v0.1.0 kept it until the
+  module was unloaded.
+
+### Fixed
+
+- A transient error on the command endpoint ended the session thread for
+  good, leaving the stick unusable until it was replugged. It now retries and
+  warns once.
+- A transport-stream read that timed out part-way dropped the data it had
+  received.
+- A DVB-T2 stream id above 255 was silently truncated to its low byte. It is
+  now refused with `-EINVAL`; unset still means PLP 0.
+- After an unplug, `FE_READ_STATUS` could go on reporting the last lock.
+- The legacy `FE_READ_SIGNAL_STRENGTH` and `FE_READ_SNR` values were not
+  clamped and could wrap.
+- `FE_READ_BER` and `FE_READ_UNCORRECTED_BLOCKS` returned a made-up zero. The
+  module reports neither, so they now return `-EOPNOTSUPP`.
+
 ## v0.1.0 — experimental (unreleased)
 
 First public release. The stick works as an ordinary Linux DVB adapter.

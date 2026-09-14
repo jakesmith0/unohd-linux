@@ -43,8 +43,8 @@ body:
       label: Kernel log
       description: |
         `dmesg | grep -i unohd`. If you are reporting a failure, please reload
-        with tracing on first — `sudo rmmod unohd_dvb; sudo insmod unohd_dvb.ko debug=1` —
-        and include that instead. It is verbose but it is what makes a report actionable.
+        with tracing on first — `sudo rmmod unohd_dvb; sudo modprobe unohd_dvb dyndbg=+p` —
+        reproduce it, and include that instead. It is verbose but it is what makes a report actionable.
       render: shell
     validations:
       required: true

@@ -330,7 +330,14 @@ took, because the hook is designed for separately built demodulator modules.
 Balancing it with `__module_get(THIS_MODULE)` deadlocks `rmmod` — which is what
 triggers `disconnect` in the first place.
 
-So the driver frees its state only once the frontend's reference count has
+*(Correction, after v0.1.0: that last sentence was reasoned, never tested, and
+holds only for a reference taken early and held — the module's count then
+never falls to zero, so `rmmod` refuses. A reference taken inside the hook
+itself, immediately before `symbol_put_addr()` drops it, is balanced. The
+unreleased version frees its state this way; see
+[`how-it-works.md`](how-it-works.md).)*
+
+So v0.1.0 frees its state only once the frontend's reference count has
 genuinely reached zero, and otherwise parks it on a list drained at module
 unload. That is safe because an open DVB device node pins the module: `dvbdev`
 sets the device node's `fops->owner` to the adapter's module, so unload cannot
@@ -497,7 +504,13 @@ settle whether it comes from the sticks or from their feeds (§17).
 
 - **Multi-PLP DVB-T2.** No multi-PLP transmission was reachable, so PLP field
   endianness is unconfirmed. Single-PLP works.
-- **Suspend/resume** across host sleep.
+- **Suspend/resume in a real host sleep.** The post-0.1.0 source has only been
+  exercised with `pm_test=devices`, which suspends and resumes every device
+  without sleeping the machine. There the module kept its session and open
+  streams carried on. What happens if the host controller loses power is
+  inferred rather than tested on the driver as it now stands. Forcing every
+  resume to be a reset-resume made the stick drop off the bus and come back as
+  a new device, which suggests the same would happen.
 - **Why the session dies when the host goes quiet.** The workaround is measured
   and effective (§15); the mechanism inside the firmware is not known. The one
   concrete hypothesis available — that EN 50221 Date/Time
@@ -508,8 +521,8 @@ settle whether it comes from the sticks or from their feeds (§17).
   and 10-62 % while delivering identical byte counts at identical error rates
   (§16), and the gap was the same on 6.8 and 7.0. Whether that is a per-unit
   calibration difference or something about the two RF legs has not been
-  separated, because it would need the feeds physically swapped. The C/N figure and the error counters agreed between
-  units; treat the strength percentage as a per-unit indication only.
+  separated, because it would need the feeds physically swapped. The quality figure and the stream error counts agreed
+  between units; treat the strength percentage as a per-unit indication only.
 - **Breadth.** Two sticks, one host, one transmitter, one country, two kernel
   versions. Everything here could be true and still miss something that only
   appears elsewhere.
@@ -525,9 +538,9 @@ three-patch series against the current media tree — driver, an
 `admin-guide` page, and a MAINTAINERS entry — which passes
 `checkpatch --strict` clean apart from one known false positive, builds with
 `W=1` without a warning, and is clean under `sparse`. What is still needed is
-the part that cannot be automated: review of the deferred-teardown approach by
-people who maintain `dvb_core`, since there may be a sanctioned pattern this
-missed, a decision on synchronous kthreads versus URBs, and — most of all —
+the part that cannot be automated: review, by people who maintain `dvb_core`,
+of how the driver frees its state through the frontend's release hook, since
+there may be a sanctioned pattern this missed, a decision on synchronous kthreads versus URBs, and — most of all —
 reports from hardware other than these two sticks.
 
 If you own one of these, a report is worth more than anything else on this

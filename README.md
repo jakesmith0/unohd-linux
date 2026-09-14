@@ -44,7 +44,7 @@ Bus 001 Device 007: ID 29df:0280 SMIT CI Device
 
 - DVB-T and DVB-T2 tuning across the full 174–862 MHz range
 - Full-rate transport stream via `dvr0` — the whole multiplex, all PIDs
-- Signal status, strength and C/N via the standard DVB v5 properties
+- Signal status, strength and signal quality via the standard DVB v5 properties
 - Multiple sticks on one host, tuned independently and simultaneously
 - Hotplug: plug, unplug and replug while other sticks keep streaming
 - TVHeadend, which detects it as a plain `linuxdvb` adapter
@@ -82,9 +82,16 @@ refcount complaint at any point.
   apart, reported 58-94 % and 10-62 % while delivering identical byte counts
   with the same near-zero error rates. The gap was the same on Linux 6.8 and
   7.0. Whether it comes from the sticks or from the two cable runs has not
-  been separated. Trust the C/N figure and the error counters; treat the
-  strength percentage as an indication for one stick on one feed.
-- Suspend/resume across a host sleep is untested.
+  been separated. Trust the lock status, the quality figure (reported as a
+  relative C/N) and the stream's error counts; treat the strength percentage
+  as an indication for one stick on one feed.
+- Suspend/resume: v0.1.0 has no suspend support, and sleeping the machine
+  while an application has the adapter open is expected to hang the suspend.
+  The current source adds it. It has been tested with the kernel's
+  `pm_test=devices` mode, which suspends and resumes every device without
+  putting the machine to sleep. Both sticks kept their adapter numbers, and
+  open streams carried on within a second of resume. A real sleep has not been
+  tried.
 - Not yet submitted to `linux-media`; this is an out-of-tree module.
 
 ## Installing
@@ -213,10 +220,15 @@ will follow the stick rather than the number.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `debug` | `0` | Set to `1` for protocol tracing in `dmesg`. Verbose; useful in bug reports. |
+| `adapter_nr` | none | DVB adapter numbers to request, in probe order, e.g. `adapter_nr=5,6`. The udev rule below is usually the better fix. |
+
+Protocol tracing goes through the kernel's dynamic debug. It is verbose, and
+it is what makes a bug report actionable:
 
 ```console
-$ sudo insmod unohd_dvb.ko debug=1
+$ sudo modprobe unohd_dvb dyndbg=+p
+$ # or, with the module already loaded:
+$ echo 'module unohd_dvb +p' | sudo tee /sys/kernel/debug/dynamic_debug/control
 ```
 
 ## Reporting problems
@@ -227,7 +239,7 @@ template, and include:
 
 - kernel version (`uname -a`) and distribution
 - `lsusb -d 29df:0280 -v` (at least the descriptor summary)
-- `dmesg | grep -i unohd`, ideally with `debug=1`
+- `dmesg | grep -i unohd`, ideally with protocol tracing on (see above)
 - what you tried and what the DVB tools reported
 
 ## How it works
