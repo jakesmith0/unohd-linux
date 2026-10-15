@@ -9,9 +9,10 @@ There was no Linux driver for this stick before. The vendor ships Windows-only
 software that drives it from userspace rather than through a normal tuner
 driver, which is part of why it never got Linux support.
 
-> **Status: v0.1.0, experimental.** Developed and tested against two sticks on
-> one machine, on UK Freeview, on Linux 6.8 and 7.0. It works well there, but
-> that is the whole of the sample. Please report what happens on yours — see
+> **Status: v0.2.0, experimental.** Developed and tested against two sticks on
+> UK Freeview, including Linux 6.8 and 7.0. v0.2.0 adds lifecycle and
+> suspend/resume fixes found during a maintainer-style review. The hardware
+> sample is still small, so please report what happens on yours — see
 > [Reporting problems](#reporting-problems).
 
 **Kernel:** builds cleanly against 5.15, 6.1, 6.8 and 7.0 headers. 6.8 and 7.0
@@ -85,9 +86,7 @@ refcount complaint at any point.
   been separated. Trust the lock status, the quality figure (reported as a
   relative C/N) and the stream's error counts; treat the strength percentage
   as an indication for one stick on one feed.
-- Suspend/resume: v0.1.0 has no suspend support, and sleeping the machine
-  while an application has the adapter open is expected to hang the suspend.
-  The current source adds it. It has been tested with the kernel's
+- Suspend/resume: v0.2.0 adds suspend support. It has been tested with the kernel's
   `pm_test=devices` mode, which suspends and resumes every device without
   putting the machine to sleep. Both sticks kept their adapter numbers, and
   open streams carried on within a second of resume. A real sleep has not been
@@ -131,11 +130,11 @@ $ sudo insmod unohd_dvb.ko
 ### DKMS (rebuilds automatically on kernel updates — recommended)
 
 ```console
-$ sudo mkdir -p /usr/src/unohd-dvb-0.1.0
-$ sudo cp -r src dkms.conf /usr/src/unohd-dvb-0.1.0/
-$ sudo dkms add    -m unohd-dvb -v 0.1.0
-$ sudo dkms build  -m unohd-dvb -v 0.1.0
-$ sudo dkms install -m unohd-dvb -v 0.1.0
+$ sudo mkdir -p /usr/src/unohd-dvb-0.2.0
+$ sudo cp -r src dkms.conf /usr/src/unohd-dvb-0.2.0/
+$ sudo dkms add    -m unohd-dvb -v 0.2.0
+$ sudo dkms build  -m unohd-dvb -v 0.2.0
+$ sudo dkms install -m unohd-dvb -v 0.2.0
 $ sudo cp udev/99-unohd-dvb.rules /etc/udev/rules.d/   # optional, see below
 $ sudo udevadm control --reload
 $ sudo modprobe unohd_dvb
@@ -158,7 +157,7 @@ usb 1-5: registered DVB adapter 3
 $ curl -fsSL https://raw.githubusercontent.com/jakesmith0/unohd-linux/main/install.sh | sudo sh -s -- --uninstall
 # installed by hand
 $ sudo rmmod unohd_dvb
-$ sudo dkms remove -m unohd-dvb -v 0.1.0 --all     # if installed via DKMS
+$ sudo dkms remove -m unohd-dvb -v 0.2.0 --all     # if installed via DKMS
 ```
 
 ### Secure Boot

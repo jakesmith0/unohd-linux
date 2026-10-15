@@ -19,7 +19,7 @@ HOME_URL=https://github.com/$REPO
 SELF_URL=https://raw.githubusercontent.com/$REPO/main/install.sh
 API=https://api.github.com/repos/$REPO
 # Used when the GitHub API cannot be reached.  Bumped with each release.
-FALLBACK_TAG=v0.1.0
+FALLBACK_TAG=v0.2.0
 
 USB_ID=29df:0280
 PKG=unohd-dvb

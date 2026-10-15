@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — experimental — 2026-10-15
 
 From a maintainer-style review of v0.1.0 ahead of submission to `linux-media`.
 
@@ -41,7 +41,7 @@ From a maintainer-style review of v0.1.0 ahead of submission to `linux-media`.
 - `FE_READ_BER` and `FE_READ_UNCORRECTED_BLOCKS` returned a made-up zero. The
   module reports neither, so they now return `-EOPNOTSUPP`.
 
-## v0.1.0 — experimental (unreleased)
+## v0.1.0 — experimental — 2026-09-05
 
 First public release. The stick works as an ordinary Linux DVB adapter.
 

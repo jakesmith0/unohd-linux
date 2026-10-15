@@ -1388,5 +1388,5 @@ module_exit(unohd_exit);
 
 MODULE_AUTHOR("Jake Smith");
 MODULE_DESCRIPTION("SMiT SM1670 (Hauppauge WinTV-UnoHD) DVB-T/T2 driver");
-MODULE_VERSION("0.1.0");
+MODULE_VERSION("0.2.0");
 MODULE_LICENSE("GPL");
